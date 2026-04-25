@@ -3,3 +3,7 @@ python-dotenv
 pandas
 pyarrow
 tqdm
+networkx
+markdown-it-py
+rapidfuzz
+scikit-learn
