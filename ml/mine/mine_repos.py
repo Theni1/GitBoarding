@@ -20,7 +20,7 @@ OUTPUT_PATH = os.path.join(os.path.dirname(__file__), "../data/repos.parquet")
 LANGUAGES = ["Python", "JavaScript", "TypeScript", "Go", "Java"]
 MIN_CONTRIBUTORS = 50
 MIN_STARS = 100
-REPOS_PER_LANGUAGE = 200
+REPOS_PER_LANGUAGE = 150
 
 
 def search_repos(language: str, page: int) -> list:
@@ -39,6 +39,8 @@ def search_repos(language: str, page: int) -> list:
         print(f"Rate limited. Waiting {wait:.0f}s...")
         time.sleep(wait)
         return search_repos(language, page)
+    if response.status_code == 422:
+        return []  # GitHub search API caps at 1000 results (10 pages)
     response.raise_for_status()
     return response.json().get("items", [])
 

@@ -4,6 +4,8 @@ pandas
 pyarrow
 tqdm
 networkx
-markdown-it-py
 rapidfuzz
 scikit-learn
+google-cloud-bigquery
+google-cloud-bigquery-storage
+db-dtypes

@@ -34,7 +34,6 @@ DATASET_PATH = os.path.join(DATA_DIR, "dataset.parquet")
 FEATURE_COLS = [
     "pagerank_score_norm",
     "contributing_score_norm",
-    "first_pr_score_norm",
     "readme_score_norm",
     "unique_contributor_count_norm",
     "commit_frequency_norm",

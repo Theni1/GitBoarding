@@ -30,17 +30,16 @@ OUTPUT_PATH = os.path.join(DATA_DIR, "dataset.parquet")
 SIGNALS = [
     ("pagerank.parquet",       "pagerank_score"),
     ("contributing.parquet",   "contributing_score"),
-    ("first_prs.parquet",      "first_pr_score"),
     ("readme.parquet",         "readme_score"),
     ("commit_history.parquet", "unique_contributor_count"),
     ("commit_history.parquet", "commit_frequency"),
 ]
 
 # A signal "fires" for a file if its normalized score is above this threshold
-SIGNAL_THRESHOLD = 0.3
+SIGNAL_THRESHOLD = 0.1
 
 # File must have >= this many signals fire to be labeled important
-MIN_SIGNALS_FOR_LABEL = 2
+MIN_SIGNALS_FOR_LABEL = 1
 
 # Common entrypoint filenames — structural prior the GNN can learn from
 ENTRYPOINTS = {
@@ -60,8 +59,11 @@ def load_signal(filename: str, score_col: str) -> pd.DataFrame:
     if not os.path.exists(path):
         print(f"  Warning: {filename} not found, filling with zeros")
         return pd.DataFrame(columns=["full_name", "file_path", score_col])
-    df = pd.read_parquet(path)[["full_name", "file_path", score_col]]
-    return df
+    df = pd.read_parquet(path)
+    if df.empty or score_col not in df.columns:
+        print(f"  Warning: {filename} is empty or missing {score_col}, filling with zeros")
+        return pd.DataFrame(columns=["full_name", "file_path", score_col])
+    return df[["full_name", "file_path", score_col]]
 
 
 def normalize_within_repo(df: pd.DataFrame, col: str) -> pd.Series:
@@ -86,12 +88,19 @@ def add_structural_features(df: pd.DataFrame) -> pd.DataFrame:
 
 def build_consensus_label(df: pd.DataFrame, norm_signal_cols: list[str]) -> pd.Series:
     """
-    Label a file as important (1) if at least MIN_SIGNALS_FOR_LABEL of its
-    normalized signal scores exceed SIGNAL_THRESHOLD.
-    Files where multiple independent signals agree are high-confidence positives.
+    Label top 10% of files per repo by combined signal score as important.
+    Falls back cleanly when only one signal is available.
     """
-    fires = (df[norm_signal_cols] > SIGNAL_THRESHOLD).sum(axis=1)
-    return (fires >= MIN_SIGNALS_FOR_LABEL).astype(int)
+    combined = df[norm_signal_cols].sum(axis=1)
+    df = df.copy()
+    df["_combined"] = combined
+
+    def top10(group):
+        top_n = max(1, int(len(group) * 0.1))
+        threshold = group["_combined"].nlargest(top_n).min()
+        return (group["_combined"] > threshold).astype(int)
+
+    return df.groupby("full_name", group_keys=False).apply(top10)
 
 
 def main():
@@ -116,15 +125,21 @@ def main():
         # commit_history has two columns — load both at once
         if filename == "commit_history.parquet":
             path = os.path.join(DATA_DIR, filename)
+            ch_cols = ["unique_contributor_count", "commit_frequency"]
             if os.path.exists(path):
-                ch = pd.read_parquet(path)[["full_name", "file_path", "unique_contributor_count", "commit_frequency"]]
-                base = base.merge(ch, on=["full_name", "file_path"], how="left")
-                signal_cols += ["unique_contributor_count", "commit_frequency"]
+                ch = pd.read_parquet(path)
+                if not ch.empty and all(c in ch.columns for c in ch_cols):
+                    ch = ch[["full_name", "file_path"] + ch_cols]
+                    base = base.merge(ch, on=["full_name", "file_path"], how="left")
+                else:
+                    print(f"  Warning: commit_history.parquet is empty, filling with zeros")
+                    for c in ch_cols:
+                        base[c] = 0.0
             else:
-                print(f"  Warning: {filename} not found, filling with zeros")
-                base["unique_contributor_count"] = 0.0
-                base["commit_frequency"] = 0.0
-                signal_cols += ["unique_contributor_count", "commit_frequency"]
+                print(f"  Warning: commit_history.parquet not found, filling with zeros")
+                for c in ch_cols:
+                    base[c] = 0.0
+            signal_cols += ch_cols
             seen_files.add(("commit_history.parquet", "commit_frequency"))
         else:
             sig = load_signal(filename, score_col)
