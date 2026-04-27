@@ -6,12 +6,24 @@ without duplicating the architecture definition.
 """
 
 import os
-import sys
+import importlib.util
 import torch
 
-# Pull in the training model definition
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../ml/train"))
-from model import FileRanker  # noqa: E402
+import sys
+import torch.nn as nn
+
+# Load dataset module first (needed by model.py for NUM_FEATURES)
+_train_dir = os.path.join(os.path.dirname(__file__), "../ml/train")
+_ds_spec = importlib.util.spec_from_file_location("train_dataset", os.path.join(_train_dir, "dataset.py"))
+_ds_mod = importlib.util.module_from_spec(_ds_spec)
+sys.modules["dataset"] = _ds_mod
+_ds_spec.loader.exec_module(_ds_mod)
+
+# Now load model.py — its `from dataset import NUM_FEATURES` will find the module above
+_spec = importlib.util.spec_from_file_location("train_model", os.path.join(_train_dir, "model.py"))
+_train_model = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_train_model)
+FileRanker = _train_model.FileRanker
 
 CHECKPOINT_PATH = os.getenv(
     "CHECKPOINT_PATH",

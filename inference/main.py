@@ -31,7 +31,7 @@ from pydantic import BaseModel
 
 from graph_builder import build_repo_graph
 from model import load_model, rank_files
-from narrate import explain_files, TOP_N
+from narrate import explain_files, analyze_architecture, TOP_N
 
 # ── In-memory cache ───────────────────────────────────────────────────────────
 # Keyed by repo SHA so results invalidate automatically when the repo updates.
@@ -75,10 +75,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-GITHUB_HEADERS = {
-    "Authorization": f"token {os.getenv('GITHUB_TOKEN')}",
-    "Accept": "application/vnd.github.v3+json",
-}
+def _github_headers() -> dict:
+    return {
+        "Authorization": f"token {os.getenv('GITHUB_TOKEN', '')}",
+        "Accept": "application/vnd.github.v3+json",
+    }
 
 
 # ── Response schema ───────────────────────────────────────────────────────────
@@ -91,6 +92,11 @@ class FileResult(BaseModel):
     signals: dict[str, float]
 
 
+class Architecture(BaseModel):
+    groups: list[dict]
+    edges: list[dict]
+
+
 class PredictResponse(BaseModel):
     owner: str
     repo: str
@@ -99,6 +105,7 @@ class PredictResponse(BaseModel):
     description: str
     language: str
     files: list[FileResult]
+    architecture: Architecture | None
     cached: bool
 
 
@@ -108,7 +115,7 @@ async def get_repo_meta(owner: str, repo: str) -> dict:
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.get(
             f"https://api.github.com/repos/{owner}/{repo}",
-            headers=GITHUB_HEADERS,
+            headers=_github_headers(),
         )
     if resp.status_code == 404:
         raise HTTPException(status_code=404, detail=f"Repo {owner}/{repo} not found")
@@ -117,13 +124,30 @@ async def get_repo_meta(owner: str, repo: str) -> dict:
     return resp.json()
 
 
+CONFIG_FILES = [
+    "package.json", "requirements.txt", "pyproject.toml", "go.mod", "Cargo.toml",
+    "Gemfile", "pom.xml", "build.gradle", "Dockerfile", "docker-compose.yml",
+    "docker-compose.yaml", ".env.example", "serverless.yml", "netlify.toml",
+    "vercel.json", "next.config.js", "next.config.ts", "vite.config.ts",
+    "angular.json", "nuxt.config.ts",
+]
+
+async def fetch_config_files(owner: str, repo: str) -> dict[str, str]:
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        async def try_fetch(path: str) -> tuple[str, str]:
+            content = await fetch_file_content(owner, repo, path)
+            return path, content
+        results = await asyncio.gather(*[try_fetch(p) for p in CONFIG_FILES])
+    return {path: content for path, content in results if content}
+
+
 async def fetch_file_content(owner: str, repo: str, path: str) -> str:
     """Fetch raw file content for Claude narration."""
     import base64
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.get(
             f"https://api.github.com/repos/{owner}/{repo}/contents/{path}",
-            headers=GITHUB_HEADERS,
+            headers=_github_headers(),
         )
     if resp.status_code != 200:
         return ""
@@ -167,7 +191,7 @@ async def predict(owner: str, repo: str):
 
     # Build signal breakdown per file (from feature vector)
     SIGNAL_NAMES = [
-        "pagerank", "contributing", "first_pr", "readme",
+        "pagerank", "contributing", "readme",
         "unique_contributors", "commit_frequency",
     ]
 
@@ -177,10 +201,13 @@ async def predict(owner: str, repo: str):
         signals = {name: round(features[j], 3) for j, name in enumerate(SIGNAL_NAMES)}
         ranked_files_input.append({"path": path, "content": content, "signals": signals})
 
-    # Get Claude explanations
-    explained = await explain_files(f"{owner}/{repo}", ranked_files_input)
+    # Run file explanations + architecture analysis in parallel
+    config_files = await fetch_config_files(owner, repo)
+    explained, arch = await asyncio.gather(
+        explain_files(f"{owner}/{repo}", ranked_files_input),
+        analyze_architecture(f"{owner}/{repo}", config_files),
+    )
 
-    # Compute raw scores for display (re-run model, or use argsort position as proxy)
     import torch
     with torch.no_grad():
         all_scores = _model(graph.x, graph.edge_index).tolist()
@@ -204,6 +231,7 @@ async def predict(owner: str, repo: str):
         "description": meta.get("description", "") or "",
         "language": meta.get("language", "") or "",
         "files": [f.model_dump() for f in files],
+        "architecture": arch,
     }
 
     _cache_set(cache_key, result)

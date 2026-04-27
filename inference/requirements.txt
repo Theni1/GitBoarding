@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+httpx
+networkx
+anthropic
+torch
+pydantic

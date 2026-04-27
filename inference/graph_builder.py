@@ -29,11 +29,11 @@ import torch
 from dataclasses import dataclass, field
 from collections import defaultdict
 
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-HEADERS = {
-    "Authorization": f"token {GITHUB_TOKEN}",
-    "Accept": "application/vnd.github.v3+json",
-}
+def _headers() -> dict:
+    return {
+        "Authorization": f"token {os.getenv('GITHUB_TOKEN', '')}",
+        "Accept": "application/vnd.github.v3+json",
+    }
 
 SOURCE_EXTENSIONS = {".py", ".js", ".ts", ".jsx", ".tsx", ".go", ".java"}
 EXTENSION_MAP = {".py": 0, ".js": 1, ".ts": 2, ".jsx": 3, ".tsx": 4, ".go": 5, ".java": 6}
@@ -71,7 +71,7 @@ class RepoGraph:
 
 
 async def gh_get(client: httpx.AsyncClient, url: str, params: dict = None) -> dict | list:
-    resp = await client.get(url, headers=HEADERS, params=params)
+    resp = await client.get(url, headers=_headers(), params=params)
     if resp.status_code == 404:
         return {}
     resp.raise_for_status()
@@ -276,15 +276,14 @@ async def build_repo_graph(owner: str, repo: str, branch: str = "main") -> RepoG
     for path in source_files:
         ext = os.path.splitext(path)[1].lower()
         row = [
-            pagerank_norm.get(path, 0.0),
-            0.0,  # contributing_score_norm — not computed at inference
-            0.0,  # first_pr_score_norm — not computed at inference
-            readme_norm.get(path, 0.0),
-            contrib_norm.get(path, 0.0),
-            freq_norm.get(path, 0.0),
-            float(path.count("/")),                          # file_depth
-            float(EXTENSION_MAP.get(ext, -1)),               # file_ext_id
-            float(os.path.basename(path) in ENTRYPOINTS),   # is_entrypoint
+            pagerank_norm.get(path, 0.0),    # pagerank_score_norm
+            0.0,                              # contributing_score_norm — not computed at inference
+            readme_norm.get(path, 0.0),       # readme_score_norm
+            contrib_norm.get(path, 0.0),      # unique_contributor_count_norm
+            freq_norm.get(path, 0.0),         # commit_frequency_norm
+            float(path.count("/")),           # file_depth
+            float(EXTENSION_MAP.get(ext, -1)),# file_ext_id
+            float(os.path.basename(path) in ENTRYPOINTS),  # is_entrypoint
         ]
         features.append(row)
 
