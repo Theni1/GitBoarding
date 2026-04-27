@@ -8,6 +8,25 @@ export interface FileResult {
   signals: Record<string, number>;
 }
 
+export interface ArchComponent {
+  id: string;
+  label: string;
+  type: string;
+}
+
+export interface ArchGroup {
+  id: string;
+  label: string;
+  col: number;
+  row: number;
+  components: ArchComponent[];
+}
+
+export interface Architecture {
+  groups: ArchGroup[];
+  edges: { from: string; to: string; label?: string }[];
+}
+
 export interface PredictResponse {
   owner: string;
   repo: string;
@@ -16,6 +35,7 @@ export interface PredictResponse {
   description: string;
   language: string;
   files: FileResult[];
+  architecture: Architecture | null;
   cached: boolean;
 }
 

@@ -1,24 +1,47 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react"; // useRef used for repoRef
 import { useRouter } from "next/navigation";
+
+const SYNONYMS = ["faster.", "quicker.", "smarter.", "easier.", "better."];
+const SYNONYM_HOLD = 2200;
+const SYNONYM_FADE = 350;
 
 export default function LandingPage() {
   const router = useRouter();
-  const [input, setInput] = useState("");
+  const [owner, setOwner] = useState("");
+  const [repo, setRepo] = useState("");
   const [error, setError] = useState("");
   const [focused, setFocused] = useState(false);
+  const repoRef = useRef<HTMLInputElement>(null);
 
-  function parseRepo(raw: string) {
-    const match = raw.trim().replace(/\/$/, "").match(/(?:github\.com\/|^)([\w.-]+)\/([\w.-]+)/);
-    return match ? { owner: match[1], repo: match[2] } : null;
-  }
+  const [synonymIdx, setSynonymIdx] = useState(0);
+  const [synonymVisible, setSynonymVisible] = useState(true);
+
+  // Synonym cycling
+  useEffect(() => {
+    const hold = setTimeout(() => {
+      setSynonymVisible(false);
+      setTimeout(() => {
+        setSynonymIdx((i) => (i + 1) % SYNONYMS.length);
+        setSynonymVisible(true);
+      }, SYNONYM_FADE);
+    }, SYNONYM_HOLD);
+    return () => clearTimeout(hold);
+  }, [synonymVisible, synonymIdx]);
 
   function handleSubmit() {
-    const parsed = parseRepo(input);
-    if (!parsed) return setError("Enter a GitHub URL or owner/repo");
-    router.push(`/${parsed.owner}/${parsed.repo}`);
+    if (!owner.trim() || !repo.trim()) return setError("Enter a GitHub owner and repo");
+    router.push(`/${owner.trim()}/${repo.trim()}`);
   }
+
+  function handleOwnerKey(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "/" || e.key === "Tab") {
+      e.preventDefault();
+      repoRef.current?.focus();
+    }
+  }
+
 
   return (
     <div className="relative min-h-screen flex flex-col bg-[#fbfbfd] text-neutral-900 font-sans overflow-hidden antialiased">
@@ -49,11 +72,6 @@ export default function LandingPage() {
             <span className="opacity-70">Boarding</span>
           </span>
           <div className="flex items-center gap-7 text-[13px] text-neutral-500">
-            {["About"].map((l) => (
-              <a key={l} href="#" className="hover:text-neutral-900 transition-colors duration-200">
-                {l}
-              </a>
-            ))}
             <a
               href="https://github.com/Theni1/GitBoarding"
               target="_blank"
@@ -68,19 +86,21 @@ export default function LandingPage() {
 
       {/* Hero */}
       <main className="relative z-10 flex-1 flex flex-col items-center justify-center px-6 pt-24 pb-32">
-
-        <h1 className="opacity-0 animate-[fadeUp_900ms_ease-out_forwards] [animation-delay:200ms] text-center font-semibold leading-[1.05] tracking-[-0.045em] text-[clamp(3rem,8.5vw,6.5rem)] m-0 max-w-5xl pb-1">
-          <span className="bg-clip-text text-transparent bg-[linear-gradient(180deg,#1d1d1f_0%,#1d1d1f_55%,#6e6e73_100%)] pb-3 inline-block">
-            Onboard onto
-            <br />
-            any repo faster.
-          </span>
+        <h1 className="text-center font-semibold leading-[1.05] tracking-[-0.045em] text-[clamp(3rem,8.5vw,6.5rem)] m-0 max-w-5xl text-[#1d1d1f]">
+          Onboard onto<br />{"any repo "}<span
+            style={{
+              display: "inline-block",
+              transition: `opacity ${SYNONYM_FADE}ms ease, transform ${SYNONYM_FADE}ms ease`,
+              opacity: synonymVisible ? 1 : 0,
+              transform: synonymVisible ? "translateY(0)" : "translateY(8px)",
+            }}
+          >{SYNONYMS[synonymIdx]}</span>
         </h1>
 
         {/* Input */}
         <form
           onSubmit={(e) => { e.preventDefault(); handleSubmit(); }}
-          className="opacity-0 animate-[fadeUp_900ms_ease-out_forwards] [animation-delay:480ms] w-full max-w-[620px] mt-12"
+          className="w-full max-w-[620px] mt-12"
         >
           <div
             className={`flex items-center gap-2 p-1.5 rounded-full border transition-all duration-300 backdrop-blur-md ${
@@ -89,26 +109,39 @@ export default function LandingPage() {
                 : "border-black/10 bg-white/80 shadow-[0_4px_16px_rgba(0,0,0,0.04)]"
             }`}
           >
-            <div className="flex-1 flex items-center pl-5 pr-2 min-w-0">
-              <span className="text-neutral-400 text-[14px] font-mono tracking-tight whitespace-nowrap select-none">
-                github.com/
+            <div className="flex-1 flex items-center gap-0 pl-5 pr-2 min-w-0">
+              <span className="text-black text-[14px] font-mono tracking-tight whitespace-nowrap select-none">github.com/</span>
+              <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-neutral-100/80 border border-black/[0.05]">
+                <input
+                  autoFocus
+                  value={owner}
+                  onChange={(e) => { setOwner(e.target.value); setError(""); }}
+                  onKeyDown={handleOwnerKey}
+                  onFocus={() => setFocused(true)}
+                  onBlur={() => setFocused(false)}
+                  placeholder="owner"
+                  className="bg-transparent border-none outline-none text-[14px] text-black placeholder:text-black/40 font-mono tracking-tight min-w-0"
+                  style={{ width: owner ? `${owner.length + 0.5}ch` : "5ch", padding: 0 }}
+                />
               </span>
-              <input
-                autoFocus
-                value={input}
-                onChange={(e) => {
-                  setInput(e.target.value);
-                  setError("");
-                }}
-                onFocus={() => setFocused(true)}
-                onBlur={() => setFocused(false)}
-                placeholder="owner/repo"
-                className="flex-1 min-w-0 bg-transparent border-none outline-none px-2 py-3 text-[14px] text-neutral-900 placeholder:text-neutral-400 font-mono tracking-tight"
-              />
+              <span className="text-black text-[14px] font-mono tracking-tight select-none mx-0.5">/</span>
+              <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-neutral-100/80 border border-black/[0.05]">
+                <input
+                  ref={repoRef}
+                  value={repo}
+                  onChange={(e) => { setRepo(e.target.value); setError(""); }}
+                  onFocus={() => setFocused(true)}
+                  onBlur={() => setFocused(false)}
+                  placeholder="repo"
+                  className="bg-transparent border-none outline-none text-[14px] text-black placeholder:text-black/40 font-mono tracking-tight min-w-0"
+                  style={{ padding: 0, width: repo ? `${repo.length + 0.5}ch` : "4ch" }}
+                />
+              </span>
             </div>
             <button
               type="submit"
-              className="group relative px-6 h-11 text-[13.5px] font-medium text-white bg-neutral-900 rounded-full whitespace-nowrap shrink-0 cursor-pointer transition-all duration-200 hover:bg-neutral-800 active:scale-[0.97]"
+              disabled={!owner.trim() || !repo.trim()}
+              className="group relative px-6 h-11 text-[13.5px] font-medium text-white bg-neutral-900 rounded-full whitespace-nowrap shrink-0 transition-all duration-200 hover:bg-neutral-800 active:scale-[0.97] disabled:opacity-30 disabled:cursor-not-allowed disabled:pointer-events-none"
             >
               <span className="inline-flex items-center gap-1.5">
                 Explore
@@ -121,10 +154,15 @@ export default function LandingPage() {
           )}
         </form>
       </main>
+
       <style>{`
         @keyframes fadeUp {
           from { opacity: 0; transform: translateY(14px); }
           to { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes blink {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0; }
         }
       `}</style>
     </div>
