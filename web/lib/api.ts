@@ -1,51 +1,57 @@
 const INFERENCE_URL = process.env.INFERENCE_URL ?? "http://localhost:8000";
 
-export interface FileResult {
-  path: string;
-  rank: number;
-  score: number;
-  explanation: string;
-  signals: Record<string, number>;
-}
-
-export interface ArchComponent {
+export interface GraphNode {
   id: string;
-  label: string;
-  type: string;
+  ext: string;
+  depth: number;
+  is_entrypoint: boolean;
+  pagerank: number;
+  cluster: number;
 }
 
-export interface ArchGroup {
-  id: string;
-  label: string;
-  col: number;
-  row: number;
-  components: ArchComponent[];
+export interface GraphEdge {
+  source: string;
+  target: string;
 }
 
-export interface Architecture {
-  groups: ArchGroup[];
-  edges: { from: string; to: string; label?: string }[];
-}
-
-export interface PredictResponse {
+export interface GraphResponse {
   owner: string;
   repo: string;
-  default_branch: string;
-  stars: number;
   description: string;
+  stars: number;
   language: string;
-  files: FileResult[];
-  architecture: Architecture | null;
+  nodes: GraphNode[];
+  edges: GraphEdge[];
   cached: boolean;
 }
 
-export async function predict(owner: string, repo: string): Promise<PredictResponse> {
-  const res = await fetch(`${INFERENCE_URL}/predict/${owner}/${repo}`, {
-    next: { revalidate: 600 }, // cache for 10 min on the Next.js side too
-  });
+export interface TraceStep {
+  file: string;
+  explanation: string;
+}
 
+export interface TraceResponse {
+  query: string;
+  cluster: number;
+  files: string[];
+  steps: TraceStep[];
+}
+
+export async function fetchGraph(owner: string, repo: string): Promise<GraphResponse> {
+  const res = await fetch(`${INFERENCE_URL}/graph/${owner}/${repo}`, {
+    next: { revalidate: 600 },
+  });
   if (res.status === 404) throw new Error("Repo not found");
   if (!res.ok) throw new Error("Inference server error");
+  return res.json();
+}
 
+export async function traceFeature(owner: string, repo: string, query: string): Promise<TraceResponse> {
+  const res = await fetch(`${INFERENCE_URL}/trace/${owner}/${repo}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query }),
+  });
+  if (!res.ok) throw new Error("Trace failed");
   return res.json();
 }
