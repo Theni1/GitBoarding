@@ -24,3 +24,6 @@ body {
 }
 
 .scrollbar-hide::-webkit-scrollbar { display: none; }
+
+/* Hide Next.js dev tools button */
+nextjs-portal { display: none; }

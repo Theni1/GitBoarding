@@ -52,20 +52,20 @@ export default function Graph3D({ nodes, edges, highlightedFiles = [], onNodeCli
 
     const graph = new (ForceGraph3D as any)()(containerRef.current)
       .graphData(graphData)
-      .backgroundColor("#0a0a0f")
+      .backgroundColor("#f5f5f7")
       .nodeLabel((node: any) => node.id)
       .nodeColor((node: any) => {
         if (highlightSet.size > 0) {
           return highlightSet.has(node.id)
             ? clusterColor(node.cluster)
-            : "#1e1e2e";
+            : "#d1d5db";
         }
         return clusterColor(node.cluster);
       })
-      .nodeOpacity(0.95)
+      .nodeOpacity(0.9)
       .nodeVal((node: any) => node.val)
-      .linkColor(() => "#ffffff18")
-      .linkWidth(0.5)
+      .linkColor(() => "#00000070")
+      .linkWidth(1.5)
       .linkDirectionalArrowLength(3)
       .linkDirectionalArrowRelPos(1)
       .linkDirectionalParticles((link: any) => {
@@ -74,8 +74,9 @@ export default function Graph3D({ nodes, edges, highlightedFiles = [], onNodeCli
         const tgt = typeof link.target === "object" ? link.target.id : link.target;
         return highlightSet.has(src) && highlightSet.has(tgt) ? 3 : 0;
       })
-      .linkDirectionalParticleColor(() => "#a78bfa")
-      .linkDirectionalParticleWidth(1.5)
+      .linkDirectionalParticleColor(() => "#6366f1")
+      .linkDirectionalParticleWidth(2)
+      .showNavInfo(false)
       .onNodeClick((node: any) => {
         onNodeClick?.(node as GraphNode);
         // Fly camera to clicked node
@@ -114,7 +115,7 @@ export default function Graph3D({ nodes, edges, highlightedFiles = [], onNodeCli
     graphRef.current
       .nodeColor((node: any) => {
         if (highlightSet.size > 0) {
-          return highlightSet.has(node.id) ? clusterColor(node.cluster) : "#1e1e2e";
+          return highlightSet.has(node.id) ? clusterColor(node.cluster) : "#d1d5db";
         }
         return clusterColor(node.cluster);
       })
@@ -148,14 +149,14 @@ export default function Graph3D({ nodes, edges, highlightedFiles = [], onNodeCli
 
       {/* Hovered node tooltip */}
       {hoveredNode && (
-        <div className="absolute bottom-4 left-4 max-w-xs bg-black/80 backdrop-blur border border-white/10 rounded-xl px-4 py-3 pointer-events-none">
-          <p className="text-[11px] font-mono text-white/50 mb-0.5">
+        <div className="absolute bottom-4 left-4 max-w-xs bg-white/90 backdrop-blur border border-black/[0.08] rounded-2xl px-4 py-3 pointer-events-none shadow-[0_4px_16px_rgba(0,0,0,0.08)]">
+          <p className="text-[10px] font-mono text-neutral-400 mb-0.5">
             cluster {hoveredNode.cluster} · {hoveredNode.ext}
           </p>
-          <p className="text-[13px] font-mono text-white break-all leading-snug">
+          <p className="text-[12px] font-mono text-neutral-800 break-all leading-snug">
             {hoveredNode.id}
           </p>
-          <p className="text-[11px] text-white/40 mt-1">
+          <p className="text-[10px] text-neutral-400 mt-1">
             pagerank {hoveredNode.pagerank.toFixed(4)}
           </p>
         </div>
@@ -164,19 +165,62 @@ export default function Graph3D({ nodes, edges, highlightedFiles = [], onNodeCli
   );
 }
 
+// Keyword → human label (checked against directory and file names)
+const LABEL_RULES: [RegExp, string][] = [
+  [/auth|login|logout|session|jwt|oauth|signin|signup/i, "Auth"],
+  [/db|database|prisma|drizzle|mongoose|sequelize|knex|supabase/i, "Database"],
+  [/api|routes?|endpoints?|handlers?|controllers?/i, "API"],
+  [/component|widget|ui|view|screen/i, "UI Components"],
+  [/util|helper|lib|shared|common|tool/i, "Utilities"],
+  [/store|state|redux|zustand|context|provider/i, "State"],
+  [/model|schema|entity|type|interface/i, "Models"],
+  [/service|client|sdk|integration/i, "Services"],
+  [/test|spec|mock|fixture/i, "Tests"],
+  [/config|setting|env|constant/i, "Config"],
+  [/middleware|guard|interceptor/i, "Middleware"],
+  [/hook|use[A-Z]/i, "Hooks"],
+  [/page|layout|app/i, "Pages"],
+  [/script|job|task|worker|queue/i, "Jobs"],
+];
+
+function clusterName(clusterNodes: GraphNode[]): string {
+  const paths = clusterNodes.map((n) => n.id).join(" ");
+
+  for (const [pattern, label] of LABEL_RULES) {
+    if (pattern.test(paths)) return label;
+  }
+
+  // Fall back to the most common top-level directory in the cluster
+  const dirs = clusterNodes
+    .map((n) => n.id.split("/")[0])
+    .filter(Boolean);
+  const freq = new Map<string, number>();
+  for (const d of dirs) freq.set(d, (freq.get(d) ?? 0) + 1);
+  const top = [...freq.entries()].sort((a, b) => b[1] - a[1])[0];
+  if (top) return top[0].charAt(0).toUpperCase() + top[0].slice(1);
+
+  return `Cluster ${clusterNodes[0]?.cluster ?? ""}`;
+}
+
 function ClusterLegend({ nodes, highlightSet }: { nodes: GraphNode[]; highlightSet: Set<string> }) {
-  const clusters = Array.from(new Map(nodes.map((n) => [n.cluster, n])).entries())
-    .sort((a, b) => a[0] - b[0]);
+  // Group nodes by cluster
+  const clusterMap = new Map<number, GraphNode[]>();
+  for (const n of nodes) {
+    if (!clusterMap.has(n.cluster)) clusterMap.set(n.cluster, []);
+    clusterMap.get(n.cluster)!.push(n);
+  }
+  const clusters = [...clusterMap.entries()].sort((a, b) => a[0] - b[0]);
 
   return (
-    <div className="absolute top-4 right-4 flex flex-col gap-1.5">
-      {clusters.map(([cluster]) => (
+    <div className="absolute top-4 left-4 flex flex-col gap-1.5 bg-white/80 backdrop-blur border border-black/[0.06] rounded-2xl px-3 py-2.5 shadow-[0_2px_8px_rgba(0,0,0,0.06)]">
+      {clusters.map(([cluster, clusterNodes]) => (
         <div key={cluster} className="flex items-center gap-2">
           <span
-            className="w-2.5 h-2.5 rounded-full shrink-0"
+            className="w-2 h-2 rounded-full shrink-0"
             style={{ background: clusterColor(cluster) }}
           />
-          <span className="text-[11px] text-white/50 font-mono">cluster {cluster}</span>
+          <span className="text-[11px] text-neutral-700 font-medium">{clusterName(clusterNodes)}</span>
+          <span className="text-[10px] text-neutral-400">{clusterNodes.length}</span>
         </div>
       ))}
     </div>
