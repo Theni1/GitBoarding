@@ -33,10 +33,11 @@ MAX_FILES = 400  # cap for speed on large repos
 
 
 def _headers() -> dict:
-    return {
-        "Authorization": f"token {os.getenv('GITHUB_TOKEN', '')}",
-        "Accept": "application/vnd.github.v3+json",
-    }
+    headers = {"Accept": "application/vnd.github.v3+json"}
+    token = os.getenv("GITHUB_TOKEN", "").strip()
+    if token:
+        headers["Authorization"] = f"token {token}"
+    return headers
 
 
 async def _gh_get(client: httpx.AsyncClient, url: str, params: dict = None):

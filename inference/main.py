@@ -16,6 +16,9 @@ Environment variables:
 
 import os
 import time
+from dotenv import load_dotenv
+
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "../.env"))
 import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -49,10 +52,11 @@ app.add_middleware(
 
 
 def _github_headers() -> dict:
-    return {
-        "Authorization": f"token {os.getenv('GITHUB_TOKEN', '')}",
-        "Accept": "application/vnd.github.v3+json",
-    }
+    headers = {"Accept": "application/vnd.github.v3+json"}
+    token = os.getenv("GITHUB_TOKEN", "").strip()
+    if token:
+        headers["Authorization"] = f"token {token}"
+    return headers
 
 
 async def _get_repo_meta(owner: str, repo: str) -> dict:
