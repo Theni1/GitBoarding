@@ -6,3 +6,4 @@ python-louvain
 sentence-transformers
 openai
 pydantic
+python-dotenv
