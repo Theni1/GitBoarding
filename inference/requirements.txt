@@ -2,6 +2,7 @@ fastapi
 uvicorn[standard]
 httpx
 networkx
-anthropic
-torch
+python-louvain
+sentence-transformers
+openai
 pydantic
