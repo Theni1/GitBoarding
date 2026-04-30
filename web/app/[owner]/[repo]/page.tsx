@@ -12,9 +12,8 @@ export default async function RepoPage({ params }: Props) {
   let data;
   try {
     data = await fetchGraph(owner, repo);
-  } catch (e: any) {
-    if (e.message === "Repo not found") notFound();
-    throw e;
+  } catch {
+    notFound();
   }
 
   return <RepoExplorer data={data} />;

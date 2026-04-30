@@ -139,7 +139,7 @@ export default function LandingPage() {
                   onBlur={() => setFocused(false)}
                   placeholder="owner"
                   className="bg-transparent border-none outline-none text-[14px] text-black placeholder:text-black/40 font-mono tracking-tight min-w-0"
-                  style={{ width: owner ? `${owner.length + 0.5}ch` : "5ch", padding: 0 }}
+                  style={{ width: owner ? `${Math.min(owner.length + 0.5, 20)}ch` : "5ch", padding: 0 }}
                 />
               </span>
               <span className="text-black text-[14px] font-mono tracking-tight select-none mx-0.5">/</span>
@@ -152,7 +152,7 @@ export default function LandingPage() {
                   onBlur={() => setFocused(false)}
                   placeholder="repo"
                   className="bg-transparent border-none outline-none text-[14px] text-black placeholder:text-black/40 font-mono tracking-tight min-w-0"
-                  style={{ padding: 0, width: repo ? `${repo.length + 0.5}ch` : "4ch" }}
+                  style={{ padding: 0, width: repo ? `${Math.min(repo.length + 0.5, 20)}ch` : "4ch" }}
                 />
               </span>
             </div>
