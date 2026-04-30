@@ -44,13 +44,12 @@ export default function RepoNotFound() {
 
       {/* Content */}
       <main className="relative z-10 flex-1 flex flex-col items-center justify-center px-6 pt-24 pb-32 text-center">
-        <p className="text-[13px] font-mono text-neutral-400 mb-4 tracking-wide uppercase">404</p>
         <h1 className="font-semibold leading-[1.05] tracking-[-0.04em] text-[clamp(2rem,6vw,4rem)] text-[#1d1d1f] mb-4">
           Repository not found
         </h1>
-        <p className="text-[15px] text-neutral-500 max-w-sm mb-10">
-          This repo doesn&apos;t exist on GitHub, or it may be private.
-          Double-check the owner and repo name.
+        <p className="text-[15px] text-[#1d1d1f] opacity-80 max-w-sm mb-9 leading-relaxed tracking-[-0.01em]">
+          This repo doesn&apos;t exist on GitHub, or it&apos;s set to private.
+          Double check the owner and repo name and try again.
         </p>
         <Link
           href="/"
