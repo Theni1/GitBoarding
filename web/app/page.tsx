@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react"; // useRef used for repoRef
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 const SYNONYMS = ["faster.", "quicker.", "smarter.", "easier.", "better."];
@@ -30,6 +30,12 @@ export default function LandingPage() {
     return () => clearTimeout(hold);
   }, [synonymVisible, synonymIdx]);
 
+  function parseGithubUrl(raw: string): { owner: string; repo: string } | null {
+    const m = raw.trim().replace(/\/$/, "").match(/(?:github\.com\/)([\w.-]+)\/([\w.-]+)/);
+    if (m) return { owner: m[1], repo: m[2] };
+    return null;
+  }
+
   function handleSubmit() {
     if (!owner.trim() || !repo.trim()) return setError("Enter a GitHub owner and repo");
     router.push(`/${owner.trim()}/${repo.trim()}`);
@@ -39,6 +45,17 @@ export default function LandingPage() {
     if (e.key === "/" || e.key === "Tab") {
       e.preventDefault();
       repoRef.current?.focus();
+    }
+  }
+
+  function handleOwnerPaste(e: React.ClipboardEvent<HTMLInputElement>) {
+    const text = e.clipboardData.getData("text");
+    const parsed = parseGithubUrl(text);
+    if (parsed) {
+      e.preventDefault();
+      setOwner(parsed.owner);
+      setRepo(parsed.repo);
+      setError("");
     }
   }
 
@@ -117,6 +134,7 @@ export default function LandingPage() {
                   value={owner}
                   onChange={(e) => { setOwner(e.target.value); setError(""); }}
                   onKeyDown={handleOwnerKey}
+                  onPaste={handleOwnerPaste}
                   onFocus={() => setFocused(true)}
                   onBlur={() => setFocused(false)}
                   placeholder="owner"
@@ -152,19 +170,42 @@ export default function LandingPage() {
           {error && (
             <p className="mt-3 text-center text-[12.5px] text-red-500/90">{error}</p>
           )}
+
+          {/* Paste URL shortcut */}
+          <div className="mt-5 relative">
+            <div className="flex items-center gap-2 px-4 h-12 rounded-2xl border border-dashed border-black/[0.12] bg-neutral-50/80 focus-within:border-black/25 focus-within:bg-white transition-all duration-200 group">
+              <svg className="shrink-0 text-neutral-300 group-focus-within:text-neutral-400 transition-colors" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <rect x="9" y="2" width="6" height="4" rx="1"/><path d="M9 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2h-2"/>
+              </svg>
+              <input
+                placeholder="Paste a GitHub URL to auto-fill"
+                className="flex-1 bg-transparent text-[13px] font-mono text-neutral-600 outline-none placeholder:text-neutral-300"
+                onPaste={(e) => {
+                  const text = e.clipboardData.getData("text");
+                  const parsed = parseGithubUrl(text);
+                  if (parsed) {
+                    e.preventDefault();
+                    setOwner(parsed.owner);
+                    setRepo(parsed.repo);
+                    setError("");
+                  }
+                }}
+                onChange={(e) => {
+                  const parsed = parseGithubUrl(e.target.value);
+                  if (parsed) {
+                    setOwner(parsed.owner);
+                    setRepo(parsed.repo);
+                    setError("");
+                    e.target.value = "";
+                  }
+                }}
+              />
+              <kbd className="shrink-0 text-[10px] text-neutral-300 font-mono bg-white border border-black/[0.08] rounded px-1.5 py-0.5 shadow-[0_1px_0_rgba(0,0,0,0.05)]">⌘V</kbd>
+            </div>
+          </div>
         </form>
       </main>
 
-      <style>{`
-        @keyframes fadeUp {
-          from { opacity: 0; transform: translateY(14px); }
-          to { opacity: 1; transform: translateY(0); }
-        }
-        @keyframes blink {
-          0%, 100% { opacity: 1; }
-          50% { opacity: 0; }
-        }
-      `}</style>
     </div>
   );
 }
