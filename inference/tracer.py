@@ -129,92 +129,163 @@ def _bfs_call_chain(G: nx.DiGraph, entry: str, cluster_set: set[str], max_depth:
     return visited
 
 
-async def _explain_with_openai(query: str, steps: list[dict]) -> list[dict]:
-    """Send the ordered file list + contents to OpenAI for step-by-step explanation."""
-    client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-    files_xml = "\n\n".join(
-        f'<file path="{s["file"]}">\n{s["content"][:600]}\n</file>'
-        for s in steps
-        if s.get("content")
-    )
-    file_list = "\n".join(f"{i+1}. {s['file']}" for i, s in enumerate(steps))
+from typing import AsyncGenerator
 
-    prompt = f"""A developer is asking: "{query}"
 
-Here are the files involved in this feature, in call-chain order:
-{file_list}
+async def name_clusters(cluster_labels: dict[str, int]) -> dict[int, str]:
+    """Ask GPT to name each cluster based on its file paths. Returns {cluster_id: name}."""
+    clusters: dict[int, list[str]] = {}
+    for path, label in cluster_labels.items():
+        clusters.setdefault(label, []).append(path)
 
-File contents:
-<files>
-{files_xml}
-</files>
-
-For each file, write exactly 1-2 sentences explaining its specific role in answering the question.
-Be concrete — mention function names, what data flows through, what it calls next.
-
-Return a JSON array only:
-[{{"file": "path/to/file.py", "explanation": "..."}}, ...]"""
-
-    response = await client.chat.completions.create(
-        model="gpt-4o-mini",
-        max_tokens=1024,
-        messages=[{"role": "user", "content": prompt}],
+    cluster_list = "\n".join(
+        f"Cluster {label}:\n" + "\n".join(f"  {p}" for p in sorted(paths)[:20])
+        for label, paths in sorted(clusters.items())
     )
 
-    raw = response.choices[0].message.content.strip()
-    if raw.startswith("```"):
-        raw = "\n".join(raw.split("\n")[1:]).rsplit("```", 1)[0]
+    prompt = (
+        "You are analyzing a software repository's file structure.\n"
+        "Below are groups of files detected as modules by a graph clustering algorithm.\n"
+        "For each cluster, give it a short 1-3 word name that describes what that module does.\n"
+        "Be specific — prefer 'Stripe Payments' over 'Payments', 'Auth Middleware' over 'Auth'.\n"
+        "Return only a JSON object mapping cluster number to name, e.g. {\"0\": \"Auth\", \"1\": \"API Routes\"}\n\n"
+        f"{cluster_list}"
+    )
 
+    oai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     try:
+        resp = await oai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            max_tokens=256,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = resp.choices[0].message.content.strip()
+        if raw.startswith("```"):
+            raw = "\n".join(raw.split("\n")[1:]).rsplit("```", 1)[0]
         parsed = json.loads(raw)
-        explanation_map = {e["file"]: e["explanation"] for e in parsed if isinstance(e, dict)}
+        return {int(k): v for k, v in parsed.items()}
     except Exception:
-        explanation_map = {}
-
-    for s in steps:
-        s["explanation"] = explanation_map.get(s["file"], "")
-
-    return steps
+        # Fall back to generic names if GPT fails
+        return {label: f"Module {label}" for label in clusters}
 
 
-import os as _os
+async def _fetch_readme(client: httpx.AsyncClient, owner: str, repo: str) -> str:
+    """Try common README filenames and return the first one found (capped at 3000 chars)."""
+    for name in ("README.md", "readme.md", "README.txt", "README"):
+        resp = await client.get(
+            f"https://api.github.com/repos/{owner}/{repo}/contents/{name}",
+            headers=_github_headers(),
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("encoding") == "base64":
+                try:
+                    return base64.b64decode(data["content"]).decode("utf-8", errors="ignore")[:3000]
+                except Exception:
+                    pass
+    return ""
 
-async def trace_feature_flow(
+
+async def chat_with_repo(
     G: nx.DiGraph,
     cluster_labels: dict[str, int],
     query: str,
+    history: list[dict],
     owner: str,
     repo: str,
-) -> dict:
+    repo_meta: dict,
+) -> AsyncGenerator[str, None]:
     summaries = _build_cluster_summaries(G, cluster_labels)
 
     if not summaries:
-        return {"query": query, "cluster": -1, "files": [], "steps": []}
+        yield "event: error\ndata: {\"message\": \"No clusters found\"}\n\n"
+        return
 
+    # Fetch README and best-cluster file contents concurrently
     best_cluster = _find_best_cluster(query, summaries)
-
     cluster_nodes = [n for n, l in cluster_labels.items() if l == best_cluster]
     cluster_set = set(cluster_nodes)
-
     entry = _find_entry_point(G, cluster_nodes, cluster_set)
-    call_chain = _bfs_call_chain(G, entry, cluster_set)
+    call_chain = _bfs_call_chain(G, entry, cluster_set)[:6]
 
-    # Cap at 8 files for the explanation — enough to tell the story
-    call_chain = call_chain[:8]
-
-    # Fetch file contents concurrently
     async with httpx.AsyncClient(timeout=15.0) as client:
-        contents = await asyncio.gather(*[
+        readme_task = _fetch_readme(client, owner, repo)
+        contents_task = asyncio.gather(*[
             _fetch_file_content(client, owner, repo, path) for path in call_chain
         ])
+        readme, contents = await asyncio.gather(readme_task, contents_task)
 
-    steps = [{"file": path, "content": content} for path, content in zip(call_chain, contents)]
-    steps = await _explain_with_openai(query, steps)
+    yield f"event: files\ndata: {json.dumps({'files': call_chain, 'cluster': best_cluster})}\n\n"
 
-    return {
-        "query": query,
-        "cluster": best_cluster,
-        "files": call_chain,
-        "steps": [{"file": s["file"], "explanation": s["explanation"]} for s in steps],
-    }
+    # Build repo-level context block
+    description = repo_meta.get("description") or ""
+    language = repo_meta.get("language") or ""
+    stars = repo_meta.get("stargazers_count", 0)
+    topics = ", ".join(repo_meta.get("topics") or [])
+
+    cluster_map = "\n".join(
+        f"  Cluster {label}: {summary}" for label, summary in sorted(summaries.items())
+    )
+
+    repo_context = f"""Repository: {owner}/{repo}
+Description: {description}
+Language: {language} | Stars: {stars}{f' | Topics: {topics}' if topics else ''}
+
+Module map (ML-detected clusters):
+{cluster_map}
+"""
+    if readme:
+        repo_context += f"\nREADME:\n{readme}"
+
+    # Build specific-file context block
+    files_xml = "\n\n".join(
+        f'<file path="{path}">\n{content[:800]}\n</file>'
+        for path, content in zip(call_chain, contents)
+        if content
+    )
+
+    openai_messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are an expert engineer who has fully read this codebase. "
+                "Answer every question with confidence and precision — you already know the answers. "
+                "Never hedge with words like 'likely', 'probably', 'appears to', 'suggests', or 'seems'. "
+                "State facts directly. Reference specific file names, function names, and data flows when relevant. "
+                "For overview questions, lead with what the repo does, not how the config files are set up. "
+                "Keep answers concise. Do not repeat file lists back to the user."
+            ),
+        },
+        {
+            "role": "user",
+            "content": f"<repo_context>\n{repo_context}\n</repo_context>",
+        },
+        {"role": "assistant", "content": "Got it, I have the repo context."},
+        {
+            "role": "user",
+            "content": f"Most relevant files for this query:\n<files>\n{files_xml}\n</files>",
+        },
+        {"role": "assistant", "content": "Got it, I have the file contents."},
+        *[{"role": m["role"], "content": m["content"]} for m in history[-6:]],
+        {"role": "user", "content": query},
+    ]
+
+    oai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    try:
+        stream = await oai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            max_tokens=1024,
+            stream=True,
+            messages=openai_messages,
+        )
+        async for chunk in stream:
+            delta = chunk.choices[0].delta.content or ""
+            if delta:
+                yield f"event: chunk\ndata: {json.dumps({'text': delta})}\n\n"
+    except Exception as e:
+        yield f"event: error\ndata: {json.dumps({'message': str(e)})}\n\n"
+
+    yield "event: done\ndata: {}\n\n"
+
+

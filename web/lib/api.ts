@@ -22,19 +22,8 @@ export interface GraphResponse {
   language: string;
   nodes: GraphNode[];
   edges: GraphEdge[];
+  cluster_names: Record<number, string>;
   cached: boolean;
-}
-
-export interface TraceStep {
-  file: string;
-  explanation: string;
-}
-
-export interface TraceResponse {
-  query: string;
-  cluster: number;
-  files: string[];
-  steps: TraceStep[];
 }
 
 export async function fetchGraph(owner: string, repo: string): Promise<GraphResponse> {
@@ -46,12 +35,3 @@ export async function fetchGraph(owner: string, repo: string): Promise<GraphResp
   return res.json();
 }
 
-export async function traceFeature(owner: string, repo: string, query: string): Promise<TraceResponse> {
-  const res = await fetch(`${INFERENCE_URL}/trace/${owner}/${repo}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ query }),
-  });
-  if (!res.ok) throw new Error("Trace failed");
-  return res.json();
-}

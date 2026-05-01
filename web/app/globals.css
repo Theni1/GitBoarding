@@ -27,3 +27,13 @@ body {
 
 /* Hide Next.js dev tools button */
 nextjs-portal { display: none; }
+
+@keyframes chatdot {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.3; }
+  30% { transform: translateY(-4px); opacity: 1; }
+}
+
+@keyframes typingpulse {
+  0%, 100% { transform: scale(1); opacity: 0.35; }
+  50% { transform: scale(1.35); opacity: 1; }
+}

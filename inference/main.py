@@ -94,22 +94,17 @@ class GraphResponse(BaseModel):
     language: str
     nodes: list[GraphNode]
     edges: list[GraphEdge]
+    cluster_names: dict[int, str] = {}
     cached: bool
 
 
-class TraceRequest(BaseModel):
-    query: str        # e.g. "how does authentication work?"
+class ChatMessage(BaseModel):
+    role: str
+    content: str
 
-class TraceStep(BaseModel):
-    file: str
-    explanation: str
-
-class TraceResponse(BaseModel):
+class ChatRequest(BaseModel):
     query: str
-    cluster: int
-    files: list[str]  # ordered call chain
-    steps: list[TraceStep]
-
+    history: list[ChatMessage] = []
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
@@ -129,7 +124,10 @@ async def get_graph(owner: str, repo: str):
         raise HTTPException(status_code=422, detail=str(e))
 
     from clustering import cluster_graph
+    from tracer import name_clusters
+
     cluster_labels = cluster_graph(G)
+    cluster_names = await name_clusters(cluster_labels)
 
     nodes = [
         GraphNode(
@@ -152,13 +150,17 @@ async def get_graph(owner: str, repo: str):
         "language": meta.get("language", "") or "",
         "nodes": [n.model_dump() for n in nodes],
         "edges": [e.model_dump() for e in edges],
+        "cluster_names": cluster_names,
     }
     _cache_set(cache_key, result)
     return {**result, "cached": False}
 
 
-@app.post("/trace/{owner}/{repo}", response_model=TraceResponse)
-async def trace_feature(owner: str, repo: str, body: TraceRequest):
+
+@app.post("/chat/{owner}/{repo}")
+async def chat_repo(owner: str, repo: str, body: ChatRequest):
+    from fastapi.responses import StreamingResponse
+
     meta = await _get_repo_meta(owner, repo)
     branch = meta.get("default_branch", "main")
 
@@ -168,11 +170,16 @@ async def trace_feature(owner: str, repo: str, body: TraceRequest):
         raise HTTPException(status_code=422, detail=str(e))
 
     from clustering import cluster_graph
-    from tracer import trace_feature_flow
+    from tracer import chat_with_repo
 
     cluster_labels = cluster_graph(G)
-    trace = await trace_feature_flow(G, cluster_labels, body.query, owner, repo)
-    return trace
+    history = [{"role": m.role, "content": m.content} for m in body.history]
+
+    return StreamingResponse(
+        chat_with_repo(G, cluster_labels, body.query, history, owner, repo, meta),
+        media_type="text/event-stream",
+        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
+    )
 
 
 @app.get("/health")
