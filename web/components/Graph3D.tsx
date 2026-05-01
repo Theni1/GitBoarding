@@ -26,15 +26,23 @@ function clusterColor(cluster: number): string {
 interface Props {
   nodes: GraphNode[];
   edges: GraphEdge[];
-  highlightedFiles?: string[];  // files to pulse from a trace
+  highlightedFiles?: string[];
+  selectedNodeId?: string | null;
+  clusterNames?: Record<number, string>;
   onNodeClick?: (node: GraphNode) => void;
 }
 
-export default function Graph3D({ nodes, edges, highlightedFiles = [], onNodeClick }: Props) {
+export default function Graph3D({ nodes, edges, highlightedFiles = [], selectedNodeId, clusterNames = {}, onNodeClick }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const graphRef = useRef<any>(null);
   const [hoveredNode, setHoveredNode] = useState<GraphNode | null>(null);
+  const hoveredNodeRef = useRef<GraphNode | null>(null);
+  const onNodeClickRef = useRef(onNodeClick);
   const highlightSet = new Set(highlightedFiles);
+
+  // Keep refs in sync so the mouseup handler always has the latest values
+  useEffect(() => { hoveredNodeRef.current = hoveredNode; }, [hoveredNode]);
+  useEffect(() => { onNodeClickRef.current = onNodeClick; }, [onNodeClick]);
 
   const initGraph = useCallback(async () => {
     if (!containerRef.current || graphRef.current) return;
@@ -55,15 +63,14 @@ export default function Graph3D({ nodes, edges, highlightedFiles = [], onNodeCli
       .backgroundColor("#f5f5f7")
       .nodeLabel((node: any) => node.id)
       .nodeColor((node: any) => {
+        if (node.id === selectedNodeId) return "#ffffff";
         if (highlightSet.size > 0) {
-          return highlightSet.has(node.id)
-            ? clusterColor(node.cluster)
-            : "#d1d5db";
+          return highlightSet.has(node.id) ? clusterColor(node.cluster) : "#d1d5db";
         }
         return clusterColor(node.cluster);
       })
       .nodeOpacity(0.9)
-      .nodeVal((node: any) => node.val)
+      .nodeVal((node: any) => node.id === selectedNodeId ? node.val * 2.5 : node.val)
       .linkColor(() => "#00000070")
       .linkWidth(1.5)
       .linkDirectionalArrowLength(3)
@@ -77,17 +84,9 @@ export default function Graph3D({ nodes, edges, highlightedFiles = [], onNodeCli
       .linkDirectionalParticleColor(() => "#6366f1")
       .linkDirectionalParticleWidth(2)
       .showNavInfo(false)
-      .onNodeClick((node: any) => {
-        onNodeClick?.(node as GraphNode);
-        // Fly camera to clicked node
-        const distance = 80;
-        const distRatio = 1 + distance / Math.hypot(node.x, node.y, node.z);
-        graph.cameraPosition(
-          { x: node.x * distRatio, y: node.y * distRatio, z: node.z * distRatio },
-          node,
-          800,
-        );
-      })
+      .enableNodeDrag(false)
+      // onNodeClick intentionally omitted — handled via mousedown/mouseup below
+      // to avoid the library swallowing clicks that involve tiny orbit motion
       .onNodeHover((node: any) => {
         setHoveredNode(node ?? null);
         if (containerRef.current) {
@@ -98,34 +97,54 @@ export default function Graph3D({ nodes, edges, highlightedFiles = [], onNodeCli
     // Slow down the simulation so it settles nicely
     graph.d3Force("charge")?.strength(-80);
 
+    // Fire onNodeClick if the mouse barely moved — catches clicks that 3d-force-graph
+    // drops because it mistook a tiny orbit motion for a drag.
+    let downX = 0, downY = 0;
+    const onMouseDown = (e: MouseEvent) => { downX = e.clientX; downY = e.clientY; };
+    const onMouseUp = (e: MouseEvent) => {
+      const dx = e.clientX - downX, dy = e.clientY - downY;
+      if (Math.hypot(dx, dy) < 5 && hoveredNodeRef.current) {
+        onNodeClickRef.current?.(hoveredNodeRef.current);
+      }
+    };
+    containerRef.current.addEventListener("mousedown", onMouseDown);
+    containerRef.current.addEventListener("mouseup", onMouseUp);
+
     graphRef.current = graph;
+    graphRef.current._clickCleanup = () => {
+      containerRef.current?.removeEventListener("mousedown", onMouseDown);
+      containerRef.current?.removeEventListener("mouseup", onMouseUp);
+    };
   }, [nodes, edges]);  // intentionally exclude highlightedFiles — updated via effect below
 
   useEffect(() => {
     initGraph();
     return () => {
+      graphRef.current?._clickCleanup?.();
       graphRef.current?._destructor?.();
       graphRef.current = null;
     };
   }, [initGraph]);
 
-  // Update node colors when highlighted files change without rebuilding the graph
+  // Update node colors/sizes when highlighted files or selected node changes
   useEffect(() => {
     if (!graphRef.current) return;
     graphRef.current
       .nodeColor((node: any) => {
+        if (node.id === selectedNodeId) return "#ffffff";
         if (highlightSet.size > 0) {
           return highlightSet.has(node.id) ? clusterColor(node.cluster) : "#d1d5db";
         }
         return clusterColor(node.cluster);
       })
+      .nodeVal((node: any) => node.id === selectedNodeId ? node.val * 2.5 : node.val)
       .linkDirectionalParticles((link: any) => {
         if (highlightSet.size === 0) return 0;
         const src = typeof link.source === "object" ? link.source.id : link.source;
         const tgt = typeof link.target === "object" ? link.target.id : link.target;
         return highlightSet.has(src) && highlightSet.has(tgt) ? 3 : 0;
       });
-  }, [highlightedFiles]);
+  }, [highlightedFiles, selectedNodeId]);
 
   // Resize observer
   useEffect(() => {
@@ -145,19 +164,22 @@ export default function Graph3D({ nodes, edges, highlightedFiles = [], onNodeCli
       <div ref={containerRef} className="w-full h-full" />
 
       {/* Cluster legend */}
-      <ClusterLegend nodes={nodes} highlightSet={highlightSet} />
+      <ClusterLegend nodes={nodes} clusterNames={clusterNames} />
 
       {/* Hovered node tooltip */}
       {hoveredNode && (
         <div className="absolute bottom-4 left-4 max-w-xs bg-white/90 backdrop-blur border border-black/[0.08] rounded-2xl px-4 py-3 pointer-events-none shadow-[0_4px_16px_rgba(0,0,0,0.08)]">
-          <p className="text-[10px] font-mono text-neutral-400 mb-0.5">
-            cluster {hoveredNode.cluster} · {hoveredNode.ext}
+          <p className="text-[10px] text-neutral-400 mb-0.5 flex items-center gap-1.5">
+            <span
+              className="inline-block w-1.5 h-1.5 rounded-full shrink-0"
+              style={{ background: clusterColor(hoveredNode.cluster) }}
+            />
+            {clusterNames[hoveredNode.cluster] ?? `Cluster ${hoveredNode.cluster}`}
+            <span className="text-neutral-300">·</span>
+            {hoveredNode.ext}
           </p>
           <p className="text-[12px] font-mono text-neutral-800 break-all leading-snug">
             {hoveredNode.id}
-          </p>
-          <p className="text-[10px] text-neutral-400 mt-1">
-            pagerank {hoveredNode.pagerank.toFixed(4)}
           </p>
         </div>
       )}
@@ -165,45 +187,7 @@ export default function Graph3D({ nodes, edges, highlightedFiles = [], onNodeCli
   );
 }
 
-// Keyword → human label (checked against directory and file names)
-const LABEL_RULES: [RegExp, string][] = [
-  [/auth|login|logout|session|jwt|oauth|signin|signup/i, "Auth"],
-  [/db|database|prisma|drizzle|mongoose|sequelize|knex|supabase/i, "Database"],
-  [/api|routes?|endpoints?|handlers?|controllers?/i, "API"],
-  [/component|widget|ui|view|screen/i, "UI Components"],
-  [/util|helper|lib|shared|common|tool/i, "Utilities"],
-  [/store|state|redux|zustand|context|provider/i, "State"],
-  [/model|schema|entity|type|interface/i, "Models"],
-  [/service|client|sdk|integration/i, "Services"],
-  [/test|spec|mock|fixture/i, "Tests"],
-  [/config|setting|env|constant/i, "Config"],
-  [/middleware|guard|interceptor/i, "Middleware"],
-  [/hook|use[A-Z]/i, "Hooks"],
-  [/page|layout|app/i, "Pages"],
-  [/script|job|task|worker|queue/i, "Jobs"],
-];
-
-function clusterName(clusterNodes: GraphNode[]): string {
-  const paths = clusterNodes.map((n) => n.id).join(" ");
-
-  for (const [pattern, label] of LABEL_RULES) {
-    if (pattern.test(paths)) return label;
-  }
-
-  // Fall back to the most common top-level directory in the cluster
-  const dirs = clusterNodes
-    .map((n) => n.id.split("/")[0])
-    .filter(Boolean);
-  const freq = new Map<string, number>();
-  for (const d of dirs) freq.set(d, (freq.get(d) ?? 0) + 1);
-  const top = [...freq.entries()].sort((a, b) => b[1] - a[1])[0];
-  if (top) return top[0].charAt(0).toUpperCase() + top[0].slice(1);
-
-  return `Cluster ${clusterNodes[0]?.cluster ?? ""}`;
-}
-
-function ClusterLegend({ nodes, highlightSet }: { nodes: GraphNode[]; highlightSet: Set<string> }) {
-  // Group nodes by cluster
+function ClusterLegend({ nodes, clusterNames }: { nodes: GraphNode[]; clusterNames: Record<number, string> }) {
   const clusterMap = new Map<number, GraphNode[]>();
   for (const n of nodes) {
     if (!clusterMap.has(n.cluster)) clusterMap.set(n.cluster, []);
@@ -219,7 +203,7 @@ function ClusterLegend({ nodes, highlightSet }: { nodes: GraphNode[]; highlightS
             className="w-2 h-2 rounded-full shrink-0"
             style={{ background: clusterColor(cluster) }}
           />
-          <span className="text-[11px] text-neutral-700 font-medium">{clusterName(clusterNodes)}</span>
+          <span className="text-[11px] text-neutral-700 font-medium">{clusterNames[cluster] ?? `Cluster ${cluster}`}</span>
           <span className="text-[10px] text-neutral-400">{clusterNodes.length}</span>
         </div>
       ))}
