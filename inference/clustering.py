@@ -63,7 +63,7 @@ def _mean_aggregation(F: np.ndarray, adj: np.ndarray, layers: int = 2) -> np.nda
     return H
 
 
-def _cosine_similarity_graph(H: np.ndarray, nodes: list[str], threshold: float = 0.85) -> nx.Graph:
+def _cosine_similarity_graph(H: np.ndarray, nodes: list[str], threshold: float = 0.70) -> nx.Graph:
     """
     Build an undirected weighted graph where nodes are connected if their
     embedding cosine similarity exceeds the threshold.
@@ -118,5 +118,31 @@ def cluster_graph(G: nx.DiGraph) -> dict[str, int]:
         if node not in partition:
             max_label += 1
             partition[node] = max_label
+
+    # Merge clusters smaller than MIN_CLUSTER_SIZE into the nearest larger cluster
+    MIN_CLUSTER_SIZE = 3
+    cluster_sizes: dict[int, int] = {}
+    for label in partition.values():
+        cluster_sizes[label] = cluster_sizes.get(label, 0) + 1
+
+    large_clusters = [label for label, size in cluster_sizes.items() if size >= MIN_CLUSTER_SIZE]
+
+    if large_clusters:
+        # Build embedding centroid per large cluster for nearest-cluster lookup
+        node_idx = {n: i for i, n in enumerate(nodes)}
+        centroids: dict[int, np.ndarray] = {}
+        for label in large_clusters:
+            members = [n for n, l in partition.items() if l == label]
+            centroids[label] = np.mean([H[node_idx[n]] for n in members], axis=0)
+
+        for node, label in list(partition.items()):
+            if cluster_sizes[label] < MIN_CLUSTER_SIZE:
+                node_emb = H[node_idx[node]]
+                best_label = min(
+                    large_clusters,
+                    key=lambda l: -float(np.dot(node_emb, centroids[l]) /
+                        (np.linalg.norm(node_emb) * np.linalg.norm(centroids[l]) + 1e-8))
+                )
+                partition[node] = best_label
 
     return partition

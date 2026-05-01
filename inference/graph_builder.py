@@ -13,9 +13,19 @@ import base64
 import asyncio
 import httpx
 import networkx as nx
-from collections import defaultdict
 
 SOURCE_EXTENSIONS = {".py", ".js", ".ts", ".jsx", ".tsx", ".go", ".java", ".rs"}
+
+# Directory prefixes and filename patterns to exclude from the graph
+EXCLUDED_DIRS = {
+    "dist", "build", "out", ".next", ".nuxt", ".cache", "coverage",
+    "__pycache__", ".git", "vendor", "generated", "storybook-static",
+    ".turbo", ".vercel", ".output",
+}
+EXCLUDED_PATTERNS = (
+    ".min.js", ".min.ts", ".bundle.js", ".d.ts", ".generated.",
+    ".pb.go", "_pb2.py",
+)
 ENTRYPOINTS = {
     "main.py", "app.py", "index.py", "__init__.py",
     "index.js", "index.ts", "app.js", "app.ts",
@@ -29,7 +39,7 @@ IMPORT_PATTERNS = [
     re.compile(r"^\s*import\s+([\w.]+);", re.MULTILINE),
 ]
 
-MAX_FILES = 400  # cap for speed on large repos
+MAX_FILES = 800  # cap for speed on large repos
 
 
 def _headers() -> dict:
@@ -92,7 +102,12 @@ def _resolve_import(raw: str, source_file: str, all_files: set[str]) -> str | No
 async def build_repo_graph(owner: str, repo: str, branch: str) -> nx.DiGraph:
     async with httpx.AsyncClient(timeout=30.0) as client:
         all_paths = await _get_file_tree(client, owner, repo, branch)
-        source_files = [p for p in all_paths if os.path.splitext(p)[1] in SOURCE_EXTENSIONS]
+        source_files = [
+            p for p in all_paths
+            if os.path.splitext(p)[1] in SOURCE_EXTENSIONS
+            and not any(part in EXCLUDED_DIRS for part in p.split("/"))
+            and not any(p.endswith(pat) for pat in EXCLUDED_PATTERNS)
+        ]
 
         if not source_files:
             raise ValueError(f"No source files found in {owner}/{repo}")
