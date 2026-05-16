@@ -1,148 +1,89 @@
-"""
-Graph clustering for the dependency graph.
-
-Pipeline:
-  1. Extract node features from the networkx graph (pagerank, depth, ext, is_entrypoint)
-  2. Run 2-layer mean aggregation (simplified GraphSAGE, no learned weights) to
-     produce embeddings that capture 2-hop neighborhood structure
-  3. Build a cosine similarity graph between nodes using those embeddings
-  4. Run Louvain community detection on the similarity graph
-  5. Return { file_path: cluster_id }
-
-Why mean aggregation instead of a trained GNN:
-  We have no labeled training data per repo — every repo is unseen at request time.
-  Mean aggregation is the message-passing step of GraphSAGE with identity weights.
-  It still captures neighborhood topology: two files that share similar import
-  neighborhoods will get similar embeddings, which Louvain then groups together.
-"""
-
-import numpy as np
 import networkx as nx
 import community as community_louvain
 
-EXT_MAP = {".py": 0, ".js": 1, ".ts": 2, ".jsx": 3, ".tsx": 4, ".go": 5, ".java": 6, ".rs": 7}
-NUM_FEATURES = 4  # pagerank, depth, ext_id, is_entrypoint
+
+def _shared_prefix_depth(a: str, b: str) -> int:
+    parts_a = a.split("/")[:-1]  # exclude filename
+    parts_b = b.split("/")[:-1]
+    depth = 0
+    for x, y in zip(parts_a, parts_b):
+        if x == y:
+            depth += 1
+        else:
+            break
+    return depth
 
 
-def _build_feature_matrix(G: nx.DiGraph) -> tuple[np.ndarray, list[str]]:
-    """Returns (F, node_list) where F is [N, NUM_FEATURES] float32."""
+def _build_similarity_graph(G: nx.DiGraph) -> nx.Graph:
     nodes = list(G.nodes())
-    F = np.zeros((len(nodes), NUM_FEATURES), dtype=np.float32)
-
-    for i, node in enumerate(nodes):
-        data = G.nodes[node]
-        F[i, 0] = data.get("pagerank", 0.0)
-        F[i, 1] = float(data.get("depth", 0))
-        F[i, 2] = float(EXT_MAP.get(data.get("ext", ""), -1))
-        F[i, 3] = float(data.get("is_entrypoint", False))
-
-    # Normalize each column to [0, 1]
-    for col in range(NUM_FEATURES):
-        col_min, col_max = F[:, col].min(), F[:, col].max()
-        if col_max > col_min:
-            F[:, col] = (F[:, col] - col_min) / (col_max - col_min)
-
-    return F, nodes
-
-
-def _mean_aggregation(F: np.ndarray, adj: np.ndarray, layers: int = 2) -> np.ndarray:
-    """
-    Simplified GraphSAGE: for each layer, replace each node's embedding with
-    the mean of itself and its neighbors. No learned weights — identity transform.
-    Output captures up to `layers`-hop neighborhood structure.
-    """
-    H = F.copy()
-    # Row-normalize adjacency (add self-loops first)
-    A = adj + np.eye(adj.shape[0], dtype=np.float32)
-    deg = A.sum(axis=1, keepdims=True).clip(min=1)
-    A_norm = A / deg
-
-    for _ in range(layers):
-        H = A_norm @ H  # [N, F] — each node becomes mean of its neighbors
-
-    return H
-
-
-def _cosine_similarity_graph(H: np.ndarray, nodes: list[str], threshold: float = 0.70) -> nx.Graph:
-    """
-    Build an undirected weighted graph where nodes are connected if their
-    embedding cosine similarity exceeds the threshold.
-    """
-    norms = np.linalg.norm(H, axis=1, keepdims=True).clip(min=1e-8)
-    H_norm = H / norms
-    sim = H_norm @ H_norm.T  # [N, N] cosine similarity matrix
+    import_edges = set(G.edges())
 
     G_sim = nx.Graph()
     G_sim.add_nodes_from(nodes)
 
     for i in range(len(nodes)):
         for j in range(i + 1, len(nodes)):
-            if sim[i, j] >= threshold:
-                G_sim.add_edge(nodes[i], nodes[j], weight=float(sim[i, j]))
+            a, b = nodes[i], nodes[j]
+            weight = 0.0
+
+            depth = _shared_prefix_depth(a, b)
+            if depth >= 3:
+                weight += 3.0
+            elif depth == 2:
+                weight += 2.0
+            elif depth == 1:
+                weight += 0.5  # weak signal — same top-level dir only
+
+            if (a, b) in import_edges or (b, a) in import_edges:
+                weight += 1.5
+
+            if weight > 0:
+                G_sim.add_edge(a, b, weight=weight)
 
     return G_sim
 
 
 def cluster_graph(G: nx.DiGraph) -> dict[str, int]:
-    """
-    Main entry point. Takes the import graph and returns a cluster label
-    per file: { file_path: cluster_id }.
-    """
     if len(G.nodes) == 0:
         return {}
 
     nodes = list(G.nodes())
-    node_idx = {n: i for i, n in enumerate(nodes)}
-    N = len(nodes)
+    G_sim = _build_similarity_graph(G)
 
-    # Build adjacency matrix from the import graph
-    adj = np.zeros((N, N), dtype=np.float32)
-    for u, v in G.edges():
-        if u in node_idx and v in node_idx:
-            adj[node_idx[u], node_idx[v]] = 1.0
-            adj[node_idx[v], node_idx[u]] = 1.0  # treat as undirected for aggregation
-
-    F, nodes = _build_feature_matrix(G)
-    H = _mean_aggregation(F, adj, layers=2)
-    G_sim = _cosine_similarity_graph(H, nodes, threshold=0.85)
-
-    # If the similarity graph has too few edges, fall back to the raw import graph
-    if G_sim.number_of_edges() < N // 4:
+    # Fall back to raw undirected import graph if similarity graph is too sparse
+    if G_sim.number_of_edges() < len(nodes) // 4:
         G_sim = G.to_undirected()
 
     partition = community_louvain.best_partition(G_sim)
 
-    # Ensure every node has a label (isolated nodes get their own cluster)
+    # Isolated nodes get their own cluster
     max_label = max(partition.values(), default=-1)
     for node in nodes:
         if node not in partition:
             max_label += 1
             partition[node] = max_label
 
-    # Merge clusters smaller than MIN_CLUSTER_SIZE into the nearest larger cluster
+    # Merge clusters smaller than 3 into the nearest cluster by shared edges
     MIN_CLUSTER_SIZE = 3
     cluster_sizes: dict[int, int] = {}
     for label in partition.values():
         cluster_sizes[label] = cluster_sizes.get(label, 0) + 1
 
-    large_clusters = [label for label, size in cluster_sizes.items() if size >= MIN_CLUSTER_SIZE]
+    large_clusters = [l for l, size in cluster_sizes.items() if size >= MIN_CLUSTER_SIZE]
 
     if large_clusters:
-        # Build embedding centroid per large cluster for nearest-cluster lookup
-        node_idx = {n: i for i, n in enumerate(nodes)}
-        centroids: dict[int, np.ndarray] = {}
-        for label in large_clusters:
-            members = [n for n, l in partition.items() if l == label]
-            centroids[label] = np.mean([H[node_idx[n]] for n in members], axis=0)
-
         for node, label in list(partition.items()):
             if cluster_sizes[label] < MIN_CLUSTER_SIZE:
-                node_emb = H[node_idx[node]]
-                best_label = min(
-                    large_clusters,
-                    key=lambda l: -float(np.dot(node_emb, centroids[l]) /
-                        (np.linalg.norm(node_emb) * np.linalg.norm(centroids[l]) + 1e-8))
-                )
-                partition[node] = best_label
+                # Find the large cluster this node shares the most edges with
+                neighbor_counts: dict[int, int] = {}
+                for neighbor in G_sim.neighbors(node):
+                    nl = partition[neighbor]
+                    if nl in cluster_sizes and cluster_sizes[nl] >= MIN_CLUSTER_SIZE:
+                        neighbor_counts[nl] = neighbor_counts.get(nl, 0) + 1
+
+                if neighbor_counts:
+                    partition[node] = max(neighbor_counts, key=lambda l: neighbor_counts[l])
+                else:
+                    partition[node] = large_clusters[0]
 
     return partition
