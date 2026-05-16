@@ -4,20 +4,20 @@ Drop any GitHub repo URL and explore its codebase as an interactive 3D graph. Ch
 
 ## What it does
 
-**3D dependency graph** — parses imports across the whole repo to build a directed file graph. GraphSAGE embeddings + Louvain clustering group files into logical modules. GPT names each cluster (Auth, API, DB, etc.). Node size reflects PageRank. Click any node to view the source.
+**3D dependency graph** — parses imports across the whole repo to build a directed file graph. Files are clustered into logical modules using directory structure and import edges as signals, then Louvain community detection finds the natural boundaries. GPT names each cluster (Auth, API, DB, etc.). Node size reflects PageRank. Click any node to view the source.
 
-**Repo chat** — ask anything about the codebase. Finds the most relevant cluster via semantic search, reads the actual files and README, and streams an answer. Keeps conversation history for follow-ups.
+**Repo chat** — ask anything about the codebase. Overview questions ("what is this repo?") get a broad answer drawn from every module. Specific questions ("how does auth work?") route to the most relevant cluster via semantic search, read the actual files, and stream a markdown answer. README and dependency manifests are always included for grounding. Keeps conversation history for follow-ups.
 
 ## Stack
 
 | | |
 |--|--|
-| Frontend | Next.js 14, TypeScript, Tailwind |
+| Frontend | Next.js, TypeScript, Tailwind |
 | 3D graph | `3d-force-graph` (Three.js) |
 | Inference | FastAPI |
-| Clustering | GraphSAGE + Louvain community detection |
-| Semantic search | `sentence-transformers` |
-| LLM | GPT-4o-mini |
+| Clustering | Directory + import signal → Louvain community detection |
+| Semantic search | `sentence-transformers` (overview vs specific routing) |
+| LLM | GPT-4o-mini (streaming) |
 
 ## Running locally
 
