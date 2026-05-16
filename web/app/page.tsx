@@ -205,6 +205,7 @@ export default function LandingPage() {
               <kbd className="shrink-0 text-[10px] text-neutral-400 font-mono bg-white border border-black/[0.10] rounded px-1.5 py-0.5 shadow-[0_1px_0_rgba(0,0,0,0.05)]">⌘V</kbd>
             </div>
           </div>
+
         </form>
       </main>
 

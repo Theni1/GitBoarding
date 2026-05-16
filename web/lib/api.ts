@@ -3,7 +3,6 @@ const INFERENCE_URL = process.env.INFERENCE_URL ?? "http://localhost:8000";
 export interface GraphNode {
   id: string;
   ext: string;
-  depth: number;
   is_entrypoint: boolean;
   pagerank: number;
   cluster: number;

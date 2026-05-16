@@ -24,7 +24,6 @@ interface Props {
 type RightTab = "trace" | "file";
 
 export default function RepoExplorer({ data }: Props) {
-  const [highlightedFiles] = useState<string[]>([]);
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
   const [fileContent, setFileContent] = useState<string | null>(null);
   const [loadingFile, setLoadingFile] = useState(false);
@@ -116,7 +115,6 @@ export default function RepoExplorer({ data }: Props) {
           <Graph3D
             nodes={data.nodes}
             edges={data.edges}
-            highlightedFiles={highlightedFiles}
             selectedNodeId={selectedNode?.id ?? null}
             clusterNames={data.cluster_names}
             onNodeClick={handleNodeClick}

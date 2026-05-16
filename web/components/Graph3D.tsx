@@ -26,19 +26,17 @@ function clusterColor(cluster: number): string {
 interface Props {
   nodes: GraphNode[];
   edges: GraphEdge[];
-  highlightedFiles?: string[];
   selectedNodeId?: string | null;
   clusterNames?: Record<number, string>;
   onNodeClick?: (node: GraphNode) => void;
 }
 
-export default function Graph3D({ nodes, edges, highlightedFiles = [], selectedNodeId, clusterNames = {}, onNodeClick }: Props) {
+export default function Graph3D({ nodes, edges, selectedNodeId, clusterNames = {}, onNodeClick }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const graphRef = useRef<any>(null);
   const [hoveredNode, setHoveredNode] = useState<GraphNode | null>(null);
   const hoveredNodeRef = useRef<GraphNode | null>(null);
   const onNodeClickRef = useRef(onNodeClick);
-  const highlightSet = new Set(highlightedFiles);
 
   // Keep refs in sync so the mouseup handler always has the latest values
   useEffect(() => { hoveredNodeRef.current = hoveredNode; }, [hoveredNode]);
@@ -62,27 +60,13 @@ export default function Graph3D({ nodes, edges, highlightedFiles = [], selectedN
       .graphData(graphData)
       .backgroundColor("#f5f5f7")
       .nodeLabel((node: any) => node.id)
-      .nodeColor((node: any) => {
-        if (node.id === selectedNodeId) return "#ffffff";
-        if (highlightSet.size > 0) {
-          return highlightSet.has(node.id) ? clusterColor(node.cluster) : "#d1d5db";
-        }
-        return clusterColor(node.cluster);
-      })
+      .nodeColor((node: any) => node.id === selectedNodeId ? "#ffffff" : clusterColor(node.cluster))
       .nodeOpacity(0.9)
       .nodeVal((node: any) => node.id === selectedNodeId ? node.val * 2.5 : node.val)
       .linkColor(() => "#00000070")
       .linkWidth(1.5)
       .linkDirectionalArrowLength(3)
       .linkDirectionalArrowRelPos(1)
-      .linkDirectionalParticles((link: any) => {
-        if (highlightSet.size === 0) return 0;
-        const src = typeof link.source === "object" ? link.source.id : link.source;
-        const tgt = typeof link.target === "object" ? link.target.id : link.target;
-        return highlightSet.has(src) && highlightSet.has(tgt) ? 3 : 0;
-      })
-      .linkDirectionalParticleColor(() => "#6366f1")
-      .linkDirectionalParticleWidth(2)
       .showNavInfo(false)
       .enableNodeDrag(false)
       // onNodeClick intentionally omitted — handled via mousedown/mouseup below
@@ -126,25 +110,13 @@ export default function Graph3D({ nodes, edges, highlightedFiles = [], selectedN
     };
   }, [initGraph]);
 
-  // Update node colors/sizes when highlighted files or selected node changes
+  // Update node colors/sizes when selected node changes
   useEffect(() => {
     if (!graphRef.current) return;
     graphRef.current
-      .nodeColor((node: any) => {
-        if (node.id === selectedNodeId) return "#ffffff";
-        if (highlightSet.size > 0) {
-          return highlightSet.has(node.id) ? clusterColor(node.cluster) : "#d1d5db";
-        }
-        return clusterColor(node.cluster);
-      })
-      .nodeVal((node: any) => node.id === selectedNodeId ? node.val * 2.5 : node.val)
-      .linkDirectionalParticles((link: any) => {
-        if (highlightSet.size === 0) return 0;
-        const src = typeof link.source === "object" ? link.source.id : link.source;
-        const tgt = typeof link.target === "object" ? link.target.id : link.target;
-        return highlightSet.has(src) && highlightSet.has(tgt) ? 3 : 0;
-      });
-  }, [highlightedFiles, selectedNodeId]);
+      .nodeColor((node: any) => node.id === selectedNodeId ? "#ffffff" : clusterColor(node.cluster))
+      .nodeVal((node: any) => node.id === selectedNodeId ? node.val * 2.5 : node.val);
+  }, [selectedNodeId]);
 
   // Resize observer
   useEffect(() => {
