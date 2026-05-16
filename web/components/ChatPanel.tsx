@@ -1,11 +1,12 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 interface ChatMessage {
   role: "user" | "assistant";
   content: string;
-  files?: string[];
   streaming?: boolean;
 }
 
@@ -66,13 +67,7 @@ export default function ChatPanel({ owner, repo }: Props) {
             currentEvent = line.slice(7).trim();
           } else if (line.startsWith("data: ")) {
             const payload = JSON.parse(line.slice(6));
-            if (currentEvent === "files") {
-              setMessages((prev) => {
-                const next = [...prev];
-                next[next.length - 1] = { ...next[next.length - 1], files: payload.files };
-                return next;
-              });
-            } else if (currentEvent === "chunk") {
+            if (currentEvent === "chunk") {
               setMessages((prev) => {
                 const next = [...prev];
                 const last = next[next.length - 1];
@@ -129,12 +124,14 @@ export default function ChatPanel({ owner, repo }: Props) {
                     ))}
                   </div>
                 ) : (
-                  <p className="text-[13px] text-neutral-900 leading-[1.65] whitespace-pre-wrap">
-                    {msg.content}
+                  <div className="text-[13px] text-neutral-900 leading-[1.65] prose prose-sm prose-neutral max-w-none">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      {msg.content}
+                    </ReactMarkdown>
                     {msg.streaming && (
                       <span className="inline-block w-[2px] h-[13px] bg-neutral-300 ml-0.5 align-middle animate-pulse" />
                     )}
-                  </p>
+                  </div>
                 )}
               </div>
             )}
