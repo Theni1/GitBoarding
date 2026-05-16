@@ -1,18 +1,3 @@
-"""
-Feature flow tracer.
-
-Given a user query ("how does auth work?"), finds the most relevant cluster
-in the graph and traces the call chain through it via BFS.
-
-Pipeline:
-  1. Build a one-line text summary for each cluster (file names + entrypoints)
-  2. Embed all cluster summaries + the query with sentence-transformers
-  3. Pick the closest cluster via cosine similarity
-  4. Find the cluster entry point (node with most incoming cross-cluster edges)
-  5. BFS from entry point through the cluster subgraph → ordered call chain
-  6. Fetch file contents + send to OpenAI for step-by-step explanation
-"""
-
 import os
 import json
 import base64
@@ -22,13 +7,13 @@ import networkx as nx
 import numpy as np
 from sentence_transformers import SentenceTransformer
 from openai import AsyncOpenAI
+from typing import AsyncGenerator
 
 _embedder: SentenceTransformer | None = None
 
 def _get_embedder() -> SentenceTransformer:
     global _embedder
     if _embedder is None:
-        # all-MiniLM-L6-v2: small (80MB), fast, good at code/tech queries
         _embedder = SentenceTransformer("all-MiniLM-L6-v2")
     return _embedder
 
@@ -57,46 +42,101 @@ async def _fetch_file_content(client: httpx.AsyncClient, owner: str, repo: str, 
         return ""
 
 
-def _build_cluster_summaries(G: nx.DiGraph, cluster_labels: dict[str, int]) -> dict[int, str]:
-    """One-line text summary per cluster: entrypoints first, then all file names."""
+async def _fetch_readme(client: httpx.AsyncClient, owner: str, repo: str) -> str:
+    for name in ("README.md", "readme.md", "README.txt", "README"):
+        resp = await client.get(
+            f"https://api.github.com/repos/{owner}/{repo}/contents/{name}",
+            headers=_github_headers(),
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("encoding") == "base64":
+                try:
+                    return base64.b64decode(data["content"]).decode("utf-8", errors="ignore")[:3000]
+                except Exception:
+                    pass
+    return ""
+
+
+async def _fetch_manifests(client: httpx.AsyncClient, owner: str, repo: str) -> str:
+    manifest_files = [
+        "package.json", "requirements.txt", "pyproject.toml",
+        "Cargo.toml", "go.mod", "Gemfile", "pom.xml",
+    ]
+    results = await asyncio.gather(*[
+        _fetch_file_content(client, owner, repo, f) for f in manifest_files
+    ])
+    parts = []
+    for name, content in zip(manifest_files, results):
+        if content:
+            parts.append(f"--- {name} ---\n{content[:1500]}")
+    return "\n\n".join(parts)
+
+
+OVERVIEW_PROBES = [
+    "what does this repo do",
+    "what is this project",
+    "give me an overview",
+    "what is the tech stack",
+    "what technologies are used",
+    "explain this codebase",
+    "what is this repository",
+    "summarize this project",
+]
+
+def _is_overview_query(query: str) -> bool:
+    embedder = _get_embedder()
+    texts = [query] + OVERVIEW_PROBES
+    embeddings = embedder.encode(texts, normalize_embeddings=True)
+    sims = embeddings[1:] @ embeddings[0]
+    return float(np.max(sims)) >= 0.55
+
+
+def _select_overview_files(G: nx.DiGraph, cluster_labels: dict[str, int]) -> list[str]:
+    """One representative file per cluster — highest PageRank node."""
+    clusters: dict[int, list[str]] = {}
+    for node, label in cluster_labels.items():
+        clusters.setdefault(label, []).append(node)
+
+    selected = []
+    for label, files in sorted(clusters.items(), key=lambda x: -len(x[1])):
+        best = max(files, key=lambda n: G.nodes[n].get("pagerank", 0.0))
+        selected.append(best)
+        if len(selected) >= 8:
+            break
+    return selected
+
+
+def _build_cluster_content_summaries(
+    G: nx.DiGraph,
+    cluster_labels: dict[str, int],
+    file_contents: dict[str, str],
+) -> dict[int, str]:
+    """Summary per cluster: first 500 chars of the top PageRank file's content."""
     clusters: dict[int, list[str]] = {}
     for node, label in cluster_labels.items():
         clusters.setdefault(label, []).append(node)
 
     summaries = {}
     for label, files in clusters.items():
-        entrypoints = [f for f in files if G.nodes[f].get("is_entrypoint")]
-        others = [f for f in files if not G.nodes[f].get("is_entrypoint")]
-        ordered = entrypoints + others
-        # Use just the base filenames for a readable summary
-        names = [os.path.basename(f).replace("_", " ").replace("-", " ").replace(".", " ") for f in ordered[:12]]
-        summaries[label] = " ".join(names)
+        best = max(files, key=lambda n: G.nodes[n].get("pagerank", 0.0))
+        content = file_contents.get(best, "")
+        summaries[label] = content[:500] if content else " ".join(
+            os.path.basename(f) for f in files[:10]
+        )
     return summaries
 
 
 def _find_best_cluster(query: str, summaries: dict[int, str]) -> int:
-    """Cosine similarity between query embedding and each cluster summary."""
     embedder = _get_embedder()
     labels = list(summaries.keys())
     texts = [summaries[l] for l in labels]
-
-    all_texts = [query] + texts
-    embeddings = embedder.encode(all_texts, normalize_embeddings=True)
-
-    query_emb = embeddings[0]
-    cluster_embs = embeddings[1:]
-
-    similarities = cluster_embs @ query_emb  # cosine sim (already normalized)
-    best_idx = int(np.argmax(similarities))
-    return labels[best_idx]
+    embeddings = embedder.encode([query] + texts, normalize_embeddings=True)
+    sims = embeddings[1:] @ embeddings[0]
+    return labels[int(np.argmax(sims))]
 
 
 def _find_entry_point(G: nx.DiGraph, cluster_nodes: list[str], cluster_set: set[str]) -> str:
-    """
-    The entry point is the cluster node with the most incoming edges
-    from OUTSIDE the cluster — it's the "front door" other code calls into.
-    Falls back to the highest pagerank node if no cross-cluster edges exist.
-    """
     cross_in: dict[str, int] = {n: 0 for n in cluster_nodes}
     for node in cluster_nodes:
         for pred in G.predecessors(node):
@@ -105,17 +145,13 @@ def _find_entry_point(G: nx.DiGraph, cluster_nodes: list[str], cluster_set: set[
 
     if max(cross_in.values()) > 0:
         return max(cross_in, key=lambda n: cross_in[n])
-
-    # Fallback: highest pagerank in cluster
     return max(cluster_nodes, key=lambda n: G.nodes[n].get("pagerank", 0.0))
 
 
 def _bfs_call_chain(G: nx.DiGraph, entry: str, cluster_set: set[str], max_depth: int = 8) -> list[str]:
-    """BFS from the entry point, staying within the cluster. Returns ordered file list."""
     visited = []
     queue = [(entry, 0)]
     seen = {entry}
-
     while queue:
         node, depth = queue.pop(0)
         visited.append(node)
@@ -125,16 +161,10 @@ def _bfs_call_chain(G: nx.DiGraph, entry: str, cluster_set: set[str], max_depth:
             if neighbor in cluster_set and neighbor not in seen:
                 seen.add(neighbor)
                 queue.append((neighbor, depth + 1))
-
     return visited
 
 
-
-from typing import AsyncGenerator
-
-
 async def name_clusters(cluster_labels: dict[str, int]) -> dict[int, str]:
-    """Ask GPT to name each cluster based on its file paths. Returns {cluster_id: name}."""
     clusters: dict[int, list[str]] = {}
     for path, label in cluster_labels.items():
         clusters.setdefault(label, []).append(path)
@@ -163,28 +193,9 @@ async def name_clusters(cluster_labels: dict[str, int]) -> dict[int, str]:
         raw = resp.choices[0].message.content.strip()
         if raw.startswith("```"):
             raw = "\n".join(raw.split("\n")[1:]).rsplit("```", 1)[0]
-        parsed = json.loads(raw)
-        return {int(k): v for k, v in parsed.items()}
+        return {int(k): v for k, v in json.loads(raw).items()}
     except Exception:
-        # Fall back to generic names if GPT fails
         return {label: f"Module {label}" for label in clusters}
-
-
-async def _fetch_readme(client: httpx.AsyncClient, owner: str, repo: str) -> str:
-    """Try common README filenames and return the first one found (capped at 3000 chars)."""
-    for name in ("README.md", "readme.md", "README.txt", "README"):
-        resp = await client.get(
-            f"https://api.github.com/repos/{owner}/{repo}/contents/{name}",
-            headers=_github_headers(),
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            if data.get("encoding") == "base64":
-                try:
-                    return base64.b64decode(data["content"]).decode("utf-8", errors="ignore")[:3000]
-                except Exception:
-                    pass
-    return ""
 
 
 async def chat_with_repo(
@@ -196,77 +207,87 @@ async def chat_with_repo(
     repo: str,
     repo_meta: dict,
 ) -> AsyncGenerator[str, None]:
-    summaries = _build_cluster_summaries(G, cluster_labels)
 
-    if not summaries:
-        yield "event: error\ndata: {\"message\": \"No clusters found\"}\n\n"
-        return
-
-    # Fetch README and best-cluster file contents concurrently
-    best_cluster = _find_best_cluster(query, summaries)
-    cluster_nodes = [n for n, l in cluster_labels.items() if l == best_cluster]
-    cluster_set = set(cluster_nodes)
-    entry = _find_entry_point(G, cluster_nodes, cluster_set)
-    call_chain = _bfs_call_chain(G, entry, cluster_set)[:6]
+    is_overview = _is_overview_query(query)
 
     async with httpx.AsyncClient(timeout=15.0) as client:
-        readme_task = _fetch_readme(client, owner, repo)
-        contents_task = asyncio.gather(*[
-            _fetch_file_content(client, owner, repo, path) for path in call_chain
-        ])
-        readme, contents = await asyncio.gather(readme_task, contents_task)
+        if is_overview:
+            focus_paths = _select_overview_files(G, cluster_labels)
+            readme, manifests, *file_contents_list = await asyncio.gather(
+                _fetch_readme(client, owner, repo),
+                _fetch_manifests(client, owner, repo),
+                *[_fetch_file_content(client, owner, repo, p) for p in focus_paths],
+            )
+            file_contents = dict(zip(focus_paths, file_contents_list))
+        else:
+            # Pre-fetch top PageRank file per cluster to build content-based summaries
+            clusters: dict[int, list[str]] = {}
+            for node, label in cluster_labels.items():
+                clusters.setdefault(label, []).append(node)
+            top_files = [
+                max(files, key=lambda n: G.nodes[n].get("pagerank", 0.0))
+                for files in clusters.values()
+            ]
+            readme, manifests, *top_contents = await asyncio.gather(
+                _fetch_readme(client, owner, repo),
+                _fetch_manifests(client, owner, repo),
+                *[_fetch_file_content(client, owner, repo, p) for p in top_files],
+            )
+            top_file_contents = dict(zip(top_files, top_contents))
 
-    yield f"event: files\ndata: {json.dumps({'files': call_chain, 'cluster': best_cluster})}\n\n"
+            summaries = _build_cluster_content_summaries(G, cluster_labels, top_file_contents)
+            best_cluster = _find_best_cluster(query, summaries)
+            cluster_nodes = [n for n, l in cluster_labels.items() if l == best_cluster]
+            cluster_set = set(cluster_nodes)
+            entry = _find_entry_point(G, cluster_nodes, cluster_set)
+            focus_paths = _bfs_call_chain(G, entry, cluster_set)[:6]
 
-    # Build repo-level context block
+            remaining = [p for p in focus_paths if p not in top_file_contents]
+            extra_contents = await asyncio.gather(
+                *[_fetch_file_content(client, owner, repo, p) for p in remaining]
+            )
+            file_contents = {**top_file_contents, **dict(zip(remaining, extra_contents))}
+
+    cluster_map = "\n".join(
+        f"  Cluster {label}: {', '.join(os.path.basename(f) for f in files[:8])}"
+        for label, files in sorted(
+            {l: [n for n, cl in cluster_labels.items() if cl == l] for l in set(cluster_labels.values())}.items()
+        )
+    )
+
     description = repo_meta.get("description") or ""
     language = repo_meta.get("language") or ""
     stars = repo_meta.get("stargazers_count", 0)
-    topics = ", ".join(repo_meta.get("topics") or [])
-
-    cluster_map = "\n".join(
-        f"  Cluster {label}: {summary}" for label, summary in sorted(summaries.items())
-    )
 
     repo_context = f"""Repository: {owner}/{repo}
 Description: {description}
-Language: {language} | Stars: {stars}{f' | Topics: {topics}' if topics else ''}
+Language: {language} | Stars: {stars}
 
-Module map (ML-detected clusters):
+Module map:
 {cluster_map}
 """
     if readme:
         repo_context += f"\nREADME:\n{readme}"
+    if manifests:
+        repo_context += f"\n\nManifests:\n{manifests}"
 
-    # Build specific-file context block
     files_xml = "\n\n".join(
-        f'<file path="{path}">\n{content[:800]}\n</file>'
-        for path, content in zip(call_chain, contents)
-        if content
+        f'<file path="{path}">\n{file_contents.get(path, "")[:2500]}\n</file>'
+        for path in focus_paths
+        if file_contents.get(path)
     )
 
-    openai_messages = [
+    messages = [
         {
             "role": "system",
             "content": (
                 "You are an expert engineer who has fully read this codebase. "
-                "Answer every question with confidence and precision — you already know the answers. "
-                "Never hedge with words like 'likely', 'probably', 'appears to', 'suggests', or 'seems'. "
-                "State facts directly. Reference specific file names, function names, and data flows when relevant. "
-                "For overview questions, lead with what the repo does, not how the config files are set up. "
-                "Keep answers concise. Do not repeat file lists back to the user."
+                "Answer with confidence and precision. Never hedge with words like 'likely', 'probably', 'appears to'. "
+                "State facts directly. Reference specific file names and function names when relevant. "
+                "Format your response in markdown. Use code blocks for code snippets."
             ),
         },
-        {
-            "role": "user",
-            "content": f"<repo_context>\n{repo_context}\n</repo_context>",
-        },
-        {"role": "assistant", "content": "Got it, I have the repo context."},
-        {
-            "role": "user",
-            "content": f"Most relevant files for this query:\n<files>\n{files_xml}\n</files>",
-        },
-        {"role": "assistant", "content": "Got it, I have the file contents."},
+        {"role": "user", "content": f"<repo_context>\n{repo_context}\n</repo_context>\n\n<files>\n{files_xml}\n</files>"},
         *[{"role": m["role"], "content": m["content"]} for m in history[-6:]],
         {"role": "user", "content": query},
     ]
@@ -277,7 +298,7 @@ Module map (ML-detected clusters):
             model="gpt-4o-mini",
             max_tokens=1024,
             stream=True,
-            messages=openai_messages,
+            messages=messages,
         )
         async for chunk in stream:
             delta = chunk.choices[0].delta.content or ""
@@ -287,5 +308,3 @@ Module map (ML-detected clusters):
         yield f"event: error\ndata: {json.dumps({'message': str(e)})}\n\n"
 
     yield "event: done\ndata: {}\n\n"
-
-
