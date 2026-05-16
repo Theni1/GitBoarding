@@ -25,8 +25,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from graph_builder import build_repo_graph
+import networkx as nx
 
 _cache: dict[str, dict] = {}
+_graph_cache: dict[str, tuple[nx.DiGraph, dict[str, int]]] = {}
 CACHE_TTL = 60 * 10  # 10 minutes
 
 
@@ -39,6 +41,18 @@ def _cache_get(key: str) -> dict | None:
 
 def _cache_set(key: str, data: dict):
     _cache[key] = {"data": data, "ts": time.time()}
+
+
+async def _get_graph_and_clusters(owner: str, repo: str, branch: str, pushed_at: str) -> tuple[nx.DiGraph, dict[str, int]]:
+    key = f"gc:{owner}/{repo}@{pushed_at}"
+    if key in _graph_cache:
+        return _graph_cache[key]
+
+    from clustering import cluster_graph
+    G = await build_repo_graph(owner, repo, branch)
+    cluster_labels = cluster_graph(G)
+    _graph_cache[key] = (G, cluster_labels)
+    return G, cluster_labels
 
 
 app = FastAPI(title="GitBoarding Inference API")
@@ -75,12 +89,11 @@ async def _get_repo_meta(owner: str, repo: str) -> dict:
 # ── Response schemas ──────────────────────────────────────────────────────────
 
 class GraphNode(BaseModel):
-    id: str           # file path
+    id: str
     ext: str
-    depth: int
     is_entrypoint: bool
     pagerank: float
-    cluster: int      # ML cluster label
+    cluster: int
 
 class GraphEdge(BaseModel):
     source: str
@@ -119,21 +132,17 @@ async def get_graph(owner: str, repo: str):
         return {**cached, "cached": True}
 
     try:
-        G = await build_repo_graph(owner, repo, branch)
+        G, cluster_labels = await _get_graph_and_clusters(owner, repo, branch, meta.get("pushed_at", ""))
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
-    from clustering import cluster_graph
     from tracer import name_clusters
-
-    cluster_labels = cluster_graph(G)
     cluster_names = await name_clusters(cluster_labels)
 
     nodes = [
         GraphNode(
             id=path,
             ext=data.get("ext", ""),
-            depth=data.get("depth", 0),
             is_entrypoint=data.get("is_entrypoint", False),
             pagerank=round(data.get("pagerank", 0.0), 5),
             cluster=cluster_labels.get(path, 0),
@@ -165,14 +174,11 @@ async def chat_repo(owner: str, repo: str, body: ChatRequest):
     branch = meta.get("default_branch", "main")
 
     try:
-        G = await build_repo_graph(owner, repo, branch)
+        G, cluster_labels = await _get_graph_and_clusters(owner, repo, branch, meta.get("pushed_at", ""))
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
-    from clustering import cluster_graph
     from tracer import chat_with_repo
-
-    cluster_labels = cluster_graph(G)
     history = [{"role": m.role, "content": m.content} for m in body.history]
 
     return StreamingResponse(
